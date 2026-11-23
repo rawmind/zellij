@@ -95,6 +95,7 @@ pub fn action_without_arguments(
         "ScrollToNextPrompt" => Ok(Action::ScrollToNextPrompt),
         "SelectCommandAtScrollPosition" => Ok(Action::SelectCommandAtScrollPosition),
         "CopyLastCommandOutput" => Ok(Action::CopyLastCommandOutput),
+        "DeleteLastCommand" => Ok(Action::DeleteLastCommand),
         "PageScrollUp" => Ok(Action::PageScrollUp),
         "PageScrollDown" => Ok(Action::PageScrollDown),
         "HalfPageScrollUp" => Ok(Action::HalfPageScrollUp),
@@ -814,6 +815,7 @@ impl Action {
                 Some(KdlNode::new("SelectCommandAtScrollPosition"))
             },
             Action::CopyLastCommandOutput => Some(KdlNode::new("CopyLastCommandOutput")),
+            Action::DeleteLastCommand => Some(KdlNode::new("DeleteLastCommand")),
             Action::PageScrollUp => Some(KdlNode::new("PageScrollUp")),
             Action::PageScrollDown => Some(KdlNode::new("PageScrollDown")),
             Action::HalfPageScrollUp => Some(KdlNode::new("HalfPageScrollUp")),
@@ -1895,6 +1897,9 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
             },
             "CopyLastCommandOutput" => {
+                parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+            },
+            "DeleteLastCommand" => {
                 parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
             },
             "PageScrollUp" => {

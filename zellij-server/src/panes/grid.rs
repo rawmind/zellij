@@ -4151,6 +4151,175 @@ impl Grid {
         None
     }
 
+    fn osc133_marker_locations(&self) -> Vec<Osc133MarkerLocation> {
+        self.lines_above
+            .iter()
+            .chain(self.viewport.iter())
+            .enumerate()
+            .flat_map(|(row, contents)| {
+                contents
+                    .osc133_markers
+                    .iter()
+                    .enumerate()
+                    .map(move |(index_in_row, marker)| Osc133MarkerLocation {
+                        row,
+                        index_in_row,
+                        column: marker.column,
+                        kind: marker.kind,
+                    })
+            })
+            .collect()
+    }
+
+    fn row_at_absolute_index_mut(&mut self, index: usize) -> Option<&mut Row> {
+        match index.checked_sub(self.lines_above.len()) {
+            Some(viewport_index) => self.viewport.get_mut(viewport_index),
+            None => self.lines_above.get_mut(index),
+        }
+    }
+
+    pub fn delete_last_command(&mut self) -> CommandDeletion {
+        let scroll_region_is_full_viewport =
+            self.scroll_region == (0, self.height.saturating_sub(1));
+        if self.alternate_screen_state.is_some()
+            || !self.osc133_markers_seen
+            || !scroll_region_is_full_viewport
+        {
+            return CommandDeletion::NotAtPrompt;
+        }
+        self.reset_viewport();
+        let markers = self.osc133_marker_locations();
+        let at_prompt = markers
+            .last()
+            .map(|marker| marker.kind.starts_prompt_or_input())
+            .unwrap_or(false);
+        if !at_prompt {
+            return CommandDeletion::NotAtPrompt;
+        }
+        let Some(output_index) = markers
+            .iter()
+            .rposition(|marker| marker.kind == Osc133MarkerKind::Output)
+        else {
+            return CommandDeletion::NothingToDelete;
+        };
+        let start_index = markers[..output_index]
+            .iter()
+            .rposition(|marker| !marker.kind.starts_prompt_or_input())
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let start = markers[start_index];
+        let Some(end) = markers[output_index..]
+            .iter()
+            .find(|marker| marker.kind.starts_prompt_or_input())
+            .copied()
+        else {
+            return CommandDeletion::NotAtPrompt;
+        };
+        if self.lines_above.len() + self.cursor.y < end.row {
+            return CommandDeletion::NotAtPrompt;
+        }
+        self.delete_between_markers(start, end);
+        CommandDeletion::Deleted
+    }
+
+    fn delete_between_markers(&mut self, start: Osc133MarkerLocation, end: Osc133MarkerLocation) {
+        if start.row == end.row {
+            if let Some(row) = self.row_at_absolute_index_mut(start.row) {
+                row.osc133_markers
+                    .remove_range(start.index_in_row..end.index_in_row);
+                row.blank_columns(start.column, end.column);
+            }
+        } else {
+            if let Some(row) = self.row_at_absolute_index_mut(end.row) {
+                row.osc133_markers.remove_range(0..end.index_in_row);
+                row.blank_columns(0, end.column);
+                row.is_canonical = true;
+            }
+            let first_deleted_row = if start.column > 0 {
+                if let Some(row) = self.row_at_absolute_index_mut(start.row) {
+                    row.expand_trailing_blanks();
+                    row.truncate(start.column);
+                    row.osc133_markers.truncate(start.index_in_row);
+                }
+                start.row + 1
+            } else {
+                start.row
+            };
+            self.remove_rows(first_deleted_row, end.row);
+        }
+        self.invalidate_scroll_offset();
+        self.recount_scrollback_display_rows(self.width);
+        self.selection.reset();
+        self.command_output_flash = None;
+        self.hover_position = None;
+        self.cached_hover_tooltip = None;
+        self.search_results.selections.clear();
+        self.search_viewport();
+        self.search_results.unset_active_selection_if_nonexistent();
+        self.output_buffer.update_all_lines();
+        self.mark_for_rerender();
+    }
+
+    fn remove_rows(&mut self, first_row: usize, end_row: usize) {
+        let removed_count = end_row.saturating_sub(first_row);
+        if removed_count == 0 {
+            return;
+        }
+        if self.sixel_grid.has_images() || self.kitty_grid.placement_count() > 0 {
+            self.clear_viewport_before_rendering = true;
+        }
+        self.kitty_settle_placements_below_the_viewport();
+        self.sixel_grid.remove_rows(first_row, removed_count);
+        self.kitty_grid.remove_rows(first_row, removed_count);
+        self.unseen_output_mark = self.unseen_output_mark.map(|(lines_above, cursor_y)| {
+            let marked_row = lines_above + cursor_y;
+            if marked_row >= end_row {
+                (marked_row - removed_count, 0)
+            } else {
+                (marked_row.min(first_row), 0)
+            }
+        });
+
+        let scrollback_len = self.lines_above.len();
+        let viewport_len = self.viewport.len();
+        let has_rows_below_cursor = self.cursor.y + 1 < viewport_len;
+        let first_viewport_row = first_row.saturating_sub(scrollback_len);
+        let end_viewport_row = end_row.saturating_sub(scrollback_len);
+        self.lines_above
+            .drain(first_row.min(scrollback_len)..end_row.min(scrollback_len));
+        self.viewport.drain(first_viewport_row..end_viewport_row);
+        let removed_from_viewport = viewport_len - self.viewport.len();
+        self.move_cursors_vertically(-(removed_from_viewport as isize));
+
+        if has_rows_below_cursor {
+            self.viewport.extend(
+                std::iter::repeat_with(|| Row::with_capacity(self.width).canonical())
+                    .take(removed_from_viewport),
+            );
+        } else if removed_from_viewport > 0 {
+            let viewport_len_before_refill = self.viewport.len();
+            transfer_rows_from_lines_above_to_viewport(
+                &mut self.lines_above,
+                &mut self.viewport,
+                &mut self.sixel_grid,
+                &mut self.kitty_grid,
+                removed_from_viewport,
+                self.width,
+            );
+            self.move_cursors_vertically(
+                self.viewport.len() as isize - viewport_len_before_refill as isize,
+            );
+        }
+        self.kitty_reanchor_all_from_pixels();
+    }
+
+    fn move_cursors_vertically(&mut self, row_delta: isize) {
+        self.cursor.y = self.cursor.y.saturating_add_signed(row_delta);
+        if let Some(saved_cursor_position) = self.saved_cursor_position.as_mut() {
+            saved_cursor_position.y = saved_cursor_position.y.saturating_add_signed(row_delta);
+        }
+    }
+
     pub fn set_command_output_flash(&mut self, start: Position, end: Position) {
         let mut flash = Selection::default();
         flash.set_start_and_end_positions(start, end);
@@ -6812,6 +6981,18 @@ impl Osc133Markers {
             markers.sort_by_key(f);
         }
     }
+    fn remove_range(&mut self, range: std::ops::Range<usize>) {
+        if let Some(markers) = self.0.as_mut() {
+            markers.drain(range);
+        }
+        self.release_if_empty();
+    }
+    fn truncate(&mut self, len: usize) {
+        if let Some(markers) = self.0.as_mut() {
+            markers.truncate(len);
+        }
+        self.release_if_empty();
+    }
     fn take_all(&mut self) -> Vec<Osc133Marker> {
         self.0.take().map(|markers| *markers).unwrap_or_default()
     }
@@ -6825,10 +7006,31 @@ enum Osc133MarkerKind {
     End(Option<i32>),
 }
 
+impl Osc133MarkerKind {
+    fn starts_prompt_or_input(&self) -> bool {
+        matches!(self, Osc133MarkerKind::Prompt | Osc133MarkerKind::Input)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Osc133Marker {
     column: usize,
     kind: Osc133MarkerKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Osc133MarkerLocation {
+    row: usize,
+    index_in_row: usize,
+    column: usize,
+    kind: Osc133MarkerKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandDeletion {
+    Deleted,
+    NothingToDelete,
+    NotAtPrompt,
 }
 
 impl Debug for Row {
@@ -7224,6 +7426,12 @@ impl Row {
         self.columns = columns;
         self.osc133_markers.clear();
         self.width = None;
+    }
+    fn blank_columns(&mut self, from: usize, to: usize) {
+        self.expand_trailing_blanks();
+        for column in from..to {
+            self.replace_character_at(EMPTY_TERMINAL_CHARACTER, column);
+        }
     }
     pub fn push(&mut self, terminal_character: TerminalCharacter) {
         self.columns.push(terminal_character);

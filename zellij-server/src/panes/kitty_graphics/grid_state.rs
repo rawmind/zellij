@@ -697,6 +697,23 @@ impl KittyGrid {
             self.placements = kept;
         }
     }
+    pub fn remove_rows(&mut self, first_row: usize, row_count: usize) {
+        let cell_height = match *self.character_cell_size.borrow() {
+            Some(cell) => cell.height as isize,
+            None => return,
+        };
+        let removed_from = first_row as isize * cell_height;
+        let removed_height = row_count as isize * cell_height;
+        let removed_until = removed_from + removed_height;
+        self.retain_placements(|placement| {
+            placement.display_rect.y < removed_from || placement.display_rect.y >= removed_until
+        });
+        for placement in self.placements.iter_mut() {
+            if placement.display_rect.y >= removed_until {
+                placement.display_rect.y -= removed_height;
+            }
+        }
+    }
     pub fn merge_rows_into_line_start(&mut self, line_start_row: usize, merged_row_count: usize) {
         if merged_row_count == 0 {
             return;

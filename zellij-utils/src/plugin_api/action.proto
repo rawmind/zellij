@@ -600,6 +600,7 @@ enum ActionName {
     PasteFromClipboardByPaneId = 154;
     ToggleStackListOrientation = 155;
     ToggleStackListOrientationByPaneId = 156;
+    DeleteLastCommand = 157;
 }
 
 message Position {

@@ -220,3 +220,108 @@ fn alt_wheel_jumps_between_prompts() {
 
     zellij.quit();
 }
+
+const DELETE_CONFIG: &str = concat!(
+    "keybinds {\n",
+    " normal {\n",
+    "  bind \"Ctrl l\" { DeleteLastCommand; }\n",
+    " }\n",
+    " scroll {\n",
+    "  bind \"x\" { DeleteLastCommand; }\n",
+    " }\n",
+    "}\n",
+);
+
+const FORM_FEED: u8 = 12;
+
+fn marked_commands_and_prompt(count: usize) -> Vec<u8> {
+    let mut content = marked_commands(count);
+    content.extend_from_slice(b"\x1b]133;A\x07$ \x1b]133;B\x07typed");
+    content
+}
+
+#[test]
+fn each_press_deletes_one_command_and_keeps_the_typed_input() {
+    let mut zellij = start_with_config(DELETE_CONFIG);
+    let terminal = claim_terminal_with(&zellij, &marked_commands_and_prompt(3), "typed");
+
+    zellij.send_stdin(&keys::ctrl('l'));
+    zellij.wait_until("the last command was deleted", |grid_snapshot| {
+        !grid_snapshot.contains("cmd02")
+            && !grid_snapshot.contains("out02")
+            && grid_snapshot.contains("out01")
+            && grid_snapshot.contains("$ typed")
+    });
+
+    zellij.send_stdin(&keys::ctrl('l'));
+    zellij.wait_until("the command before it was deleted", |grid_snapshot| {
+        !grid_snapshot.contains("cmd01")
+            && grid_snapshot.contains("out00")
+            && grid_snapshot.contains("$ typed")
+    });
+
+    zellij.send_stdin(b"z");
+    let received = terminal.wait_for_stdin("the marker key", |bytes| bytes.contains(&b'z'));
+    assert!(
+        !received.contains(&FORM_FEED),
+        "a handled delete must not reach the program"
+    );
+
+    zellij.quit();
+}
+
+#[test]
+fn the_delete_key_reaches_a_running_command() {
+    let mut zellij = start_with_config(DELETE_CONFIG);
+    let mut content = marked_commands(2);
+    content.extend_from_slice(b"\x1b]133;A\x07$ \x1b]133;B\x07runs\x1b]133;C\x07\r\nstill running");
+    let terminal = claim_terminal_with(&zellij, &content, "still running");
+
+    zellij.send_stdin(&keys::ctrl('l'));
+    terminal.wait_for_stdin("the forwarded key", |bytes| bytes.contains(&FORM_FEED));
+    assert!(zellij.snapshot().contains("out01"));
+
+    zellij.quit();
+}
+
+#[test]
+fn the_delete_key_reaches_a_full_screen_program() {
+    let mut zellij = start_with_config(DELETE_CONFIG);
+    let mut content = marked_commands_and_prompt(2);
+    content.extend_from_slice(b"\x1b[?1049h\x1b[Hfull screen");
+    let terminal = claim_terminal_with(&zellij, &content, "full screen");
+
+    zellij.send_stdin(&keys::ctrl('l'));
+    terminal.wait_for_stdin("the forwarded key", |bytes| bytes.contains(&FORM_FEED));
+
+    zellij.quit();
+}
+
+#[test]
+fn the_delete_key_reaches_a_shell_without_markers() {
+    let mut zellij = start_with_config(DELETE_CONFIG);
+    let terminal = claim_terminal_with(&zellij, b"unmarked$ ", "unmarked$");
+
+    zellij.send_stdin(&keys::ctrl('l'));
+    terminal.wait_for_stdin("the forwarded key", |bytes| bytes.contains(&FORM_FEED));
+
+    zellij.quit();
+}
+
+#[test]
+fn a_delete_key_bound_in_scroll_mode_never_reaches_the_program() {
+    let mut zellij = start_with_config(DELETE_CONFIG);
+    let terminal = claim_terminal_with(&zellij, b"unmarked$ ", "unmarked$");
+    enter_scroll_mode(&zellij);
+
+    zellij.send_stdin(b"x");
+    zellij.send_stdin(&keys::ctrl('c'));
+    zellij.wait_until("scroll mode was left", |grid_snapshot| {
+        !grid_snapshot.contains(SCROLL_MODE_HINT)
+    });
+    zellij.send_stdin(b"z");
+    let received = terminal.wait_for_stdin("the marker key", |bytes| bytes.contains(&b'z'));
+    assert!(!received.contains(&b'x'));
+
+    zellij.quit();
+}

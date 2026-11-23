@@ -5,7 +5,7 @@ use crate::panes::kitty_graphics::{
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::LinkHandler;
 use crate::panes::{
-    grid::{Grid, PendingNotification},
+    grid::{CommandDeletion, Grid, PendingNotification},
     nested_session_modal::GuestModalShortcuts,
     terminal_character::{render_first_run_banner, TerminalCharacter, EMPTY_TERMINAL_CHARACTER},
 };
@@ -841,6 +841,16 @@ impl Pane for TerminalPane {
         self.grid.set_command_output_flash(start, end);
         self.set_should_render(true);
         Some(output)
+    }
+    fn delete_last_command(&mut self) -> bool {
+        match self.grid.delete_last_command() {
+            CommandDeletion::Deleted => {
+                self.set_should_render(true);
+                true
+            },
+            CommandDeletion::NothingToDelete => true,
+            CommandDeletion::NotAtPrompt => false,
+        }
     }
     fn clear_command_output_flash(&mut self) {
         if self.grid.clear_command_output_flash() {

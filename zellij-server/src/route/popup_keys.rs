@@ -64,6 +64,7 @@ pub(crate) fn popup_action_rule(action: &Action) -> PopupActionRule {
         | Action::ScrollToNextPrompt
         | Action::SelectCommandAtScrollPosition
         | Action::CopyLastCommandOutput
+        | Action::DeleteLastCommand
         | Action::ClearScreen
         | Action::Copy
         | Action::Paste { pane_id: None, .. }

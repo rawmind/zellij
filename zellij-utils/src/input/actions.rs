@@ -257,6 +257,7 @@ pub enum Action {
     ScrollToNextPrompt,
     SelectCommandAtScrollPosition,
     CopyLastCommandOutput,
+    DeleteLastCommand,
     /// Scroll down to bottom in focus pane.
     ScrollToBottom,
     /// Scroll up to top in focus pane.

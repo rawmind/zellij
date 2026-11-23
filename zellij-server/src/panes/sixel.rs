@@ -316,6 +316,27 @@ impl SixelGrid {
             }
         }
     }
+    pub fn remove_rows(&mut self, first_row: usize, row_count: usize) {
+        if let Some(character_cell_size) = *self.character_cell_size.borrow() {
+            let cell_height = character_cell_size.height as isize;
+            let removed_from = first_row as isize * cell_height;
+            let removed_height = row_count as isize * cell_height;
+            let removed_until = removed_from + removed_height;
+            let image_ids_to_reap = &mut self.image_ids_to_reap;
+            self.sixel_image_locations
+                .retain(|sixel_image_id, pixel_rect| {
+                    if pixel_rect.y >= removed_until {
+                        pixel_rect.y -= removed_height;
+                        true
+                    } else if pixel_rect.y >= removed_from {
+                        image_ids_to_reap.push(*sixel_image_id);
+                        false
+                    } else {
+                        true
+                    }
+                });
+        }
+    }
     pub fn drain_image_ids_to_reap(&mut self) -> Option<Vec<usize>> {
         if !self.images_to_check_for_emptiness.is_empty() {
             let store = self.sixel_image_store.borrow();

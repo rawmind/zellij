@@ -308,6 +308,10 @@ impl TryFrom<ProtobufAction> for Action {
                     None => Ok(Action::CopyLastCommandOutput),
                 }
             },
+            Some(ProtobufActionName::DeleteLastCommand) => match protobuf_action.optional_payload {
+                Some(_) => Err("DeleteLastCommand should not have a payload"),
+                None => Ok(Action::DeleteLastCommand),
+            },
             Some(ProtobufActionName::PageScrollUp) => match protobuf_action.optional_payload {
                 Some(_) => Err("PageScrollUp should not have a payload"),
                 None => Ok(Action::PageScrollUp),
@@ -1752,6 +1756,10 @@ impl TryFrom<Action> for ProtobufAction {
             }),
             Action::CopyLastCommandOutput => Ok(ProtobufAction {
                 name: ProtobufActionName::CopyLastCommandOutput as i32,
+                optional_payload: None,
+            }),
+            Action::DeleteLastCommand => Ok(ProtobufAction {
+                name: ProtobufActionName::DeleteLastCommand as i32,
                 optional_payload: None,
             }),
             Action::ScrollUpAt { position } => {
@@ -4275,6 +4283,7 @@ mod tests {
             Action::ScrollToNextPrompt,
             Action::SelectCommandAtScrollPosition,
             Action::CopyLastCommandOutput,
+            Action::DeleteLastCommand,
         ] {
             let protobuf: ProtobufAction = original.clone().try_into().expect("encode");
             let decoded: Action = protobuf.try_into().expect("decode");

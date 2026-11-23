@@ -10,7 +10,7 @@ use crate::{
     panes::PaneId,
     plugins::PluginInstruction,
     pty::{ClientTabIndexOrPaneId, PtyInstruction},
-    screen::ScreenInstruction,
+    screen::{KeyFallback, ScreenInstruction},
     ServerInstruction, SessionMetaData, SessionState,
 };
 use std::thread;
@@ -776,6 +776,15 @@ fn route_action_with_origin(
                     client_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
+                .with_context(err_context)?;
+        },
+        Action::DeleteLastCommand => {
+            senders
+                .send_to_screen(ScreenInstruction::DeleteLastCommand {
+                    client_id,
+                    key_fallback: None,
+                    completion_tx: Some(NotificationEnd::new(completion_tx)),
+                })
                 .with_context(err_context)?;
         },
         Action::ScrollUpAt { position } => {
@@ -3120,6 +3129,14 @@ pub(crate) fn route_thread_main(
                                         && s.modal_popup_clients.contains(&client_id);
                                     let (kb, im, dim) =
                                         s.get_client_keybinds_and_mode(&client_id)?;
+                                    let reaches_terminal_when_unbound = *im == dim
+                                        || matches!(im, InputMode::Normal | InputMode::Locked);
+                                    let key_fallback =
+                                        reaches_terminal_when_unbound.then(|| KeyFallback {
+                                            key: key.clone(),
+                                            raw_bytes: raw_bytes.clone(),
+                                            is_kitty_keyboard_protocol,
+                                        });
                                     let key_actions = popup_keys::key_dispatch(
                                         kb,
                                         im,
@@ -3137,10 +3154,16 @@ pub(crate) fn route_thread_main(
                                         s.session_configuration
                                             .get_client_default_input_mode(&client_id),
                                         key_actions,
+                                        key_fallback,
                                     ))
                                 });
-                            if let Some((senders, default_shell, client_input_mode, key_actions)) =
-                                dispatch_inputs
+                            if let Some((
+                                senders,
+                                default_shell,
+                                client_input_mode,
+                                key_actions,
+                                key_fallback,
+                            )) = dispatch_inputs
                             {
                                 for key_action in key_actions {
                                     let action = match key_action {
@@ -3207,6 +3230,25 @@ pub(crate) fn route_thread_main(
                                         terminal_id: None,
                                         cli_client_id: None,
                                     });
+
+                                    if action == Action::DeleteLastCommand {
+                                        let (completion_tx, completion_rx) = oneshot::channel();
+                                        let _ = senders.send_to_screen(
+                                            ScreenInstruction::DeleteLastCommand {
+                                                client_id,
+                                                key_fallback: key_fallback.clone(),
+                                                completion_tx: Some(NotificationEnd::new(
+                                                    completion_tx,
+                                                )),
+                                            },
+                                        );
+                                        let _ = wait_for_action_completion(
+                                            completion_rx,
+                                            "DeleteLastCommand",
+                                            false,
+                                        );
+                                        continue;
+                                    }
 
                                     let origin_pane_id = if spawns_command_pane(&action) {
                                         focused_pane_id(&senders, client_id)

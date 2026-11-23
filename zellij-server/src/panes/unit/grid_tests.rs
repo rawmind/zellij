@@ -1,5 +1,5 @@
 use super::super::Grid;
-use crate::panes::grid::SixelImageStore;
+use crate::panes::grid::{CommandDeletion, SixelImageStore};
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::link_handler::LinkHandler;
 use crate::vt_parser;
@@ -11576,4 +11576,262 @@ fn oversized_xtgettcap_request_is_dropped() {
     sequence.extend_from_slice(b"\x1b\\");
     vte_parser.feed(&mut grid, &sequence);
     assert!(grid.pending_messages_to_pty.is_empty());
+}
+
+fn marked_command(command: &str, output: &str) -> String {
+    format!("\x1b]133;A\x07$ \x1b]133;B\x07{command}\x1b]133;C\x07\r\n{output}\r\n\x1b]133;D;0\x07")
+}
+
+const MARKED_PROMPT: &str = "\x1b]133;A\x07$ \x1b]133;B\x07";
+
+fn screen_lines(grid: &Grid) -> Vec<String> {
+    grid.dump_screen(true)
+        .lines()
+        .map(|line| line.trim_end().to_owned())
+        .collect()
+}
+
+fn assert_scrollback_count_is_consistent(grid: &mut Grid) {
+    let counted = grid.scrollback_position_and_length();
+    grid.recount_scrollback_display_rows(grid.width);
+    assert_eq!(counted, grid.scrollback_position_and_length());
+}
+
+#[test]
+fn delete_last_command_removes_one_block_at_a_time() {
+    let content = format!(
+        "motd\r\n{}{}{}ty",
+        marked_command("one", "1"),
+        marked_command("two", "2\r\n22"),
+        MARKED_PROMPT
+    );
+    let mut grid = create_grid_with_size_and_raw(20, 20, content.as_bytes());
+
+    assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+    assert_eq!(screen_lines(&grid), ["motd", "$ one", "1", "$ ty"]);
+    assert_eq!(grid.cursor_coordinates(), Some((4, 3, true)));
+
+    assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+    assert_eq!(screen_lines(&grid), ["motd", "$ ty"]);
+
+    assert_eq!(grid.delete_last_command(), CommandDeletion::NothingToDelete);
+    assert_eq!(screen_lines(&grid), ["motd", "$ ty"]);
+
+    feed_bytes(&mut grid, b"ped");
+    assert_eq!(screen_lines(&grid), ["motd", "$ typed"]);
+}
+
+#[test]
+fn delete_last_command_pulls_scrollback_into_the_freed_rows() {
+    let mut content = String::new();
+    for index in 0..10 {
+        content.push_str(&marked_command(
+            &format!("cmd{index}"),
+            &format!("out{index}"),
+        ));
+    }
+    content.push_str(MARKED_PROMPT);
+    let mut grid = create_grid_with_size_and_raw(5, 20, content.as_bytes());
+
+    assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+    assert_eq!(
+        grid.dump_screen(false)
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>(),
+        ["$ cmd7", "out7", "$ cmd8", "out8", "$"]
+    );
+    assert_eq!(grid.cursor_coordinates(), Some((2, 4, true)));
+    assert_scrollback_count_is_consistent(&mut grid);
+}
+
+#[test]
+fn delete_last_command_removes_output_taller_than_the_viewport() {
+    let tall_output = (0..30)
+        .map(|line| format!("tall{line}"))
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    let content = format!(
+        "{}{}{}",
+        marked_command("one", "1"),
+        marked_command("tall", &tall_output),
+        MARKED_PROMPT
+    );
+    let mut grid = create_grid_with_size_and_raw(5, 20, content.as_bytes());
+
+    assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+    assert_eq!(screen_lines(&grid), ["$ one", "1", "$"]);
+    assert_eq!(grid.cursor_coordinates(), Some((2, 2, true)));
+    assert!(grid.lines_above.is_empty());
+    assert_scrollback_count_is_consistent(&mut grid);
+
+    feed_bytes(&mut grid, b"next\r\nline");
+    assert_eq!(screen_lines(&grid), ["$ one", "1", "$ next", "line"]);
+}
+
+#[test]
+fn delete_last_command_removes_wrapped_rows() {
+    let content = format!(
+        "{}{}{}",
+        marked_command("one", "a long line before"),
+        marked_command("a long wrapped command", "a long wrapped output line"),
+        MARKED_PROMPT
+    );
+    for rows in [4, 20] {
+        let mut grid = create_grid_with_size_and_raw(rows, 8, content.as_bytes());
+        assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+        assert_eq!(
+            screen_lines(&grid).join("").replace(' ', ""),
+            "$onealonglinebefore$"
+        );
+        assert_scrollback_count_is_consistent(&mut grid);
+        grid.change_size(rows, 30);
+        assert_eq!(screen_lines(&grid), ["$ one", "a long line before", "$"]);
+    }
+}
+
+#[test]
+fn delete_last_command_from_a_scrolled_view_returns_to_the_bottom() {
+    let mut content = String::new();
+    for index in 0..10 {
+        content.push_str(&marked_command(
+            &format!("cmd{index}"),
+            &format!("out{index}"),
+        ));
+    }
+    content.push_str(MARKED_PROMPT);
+    let mut grid = create_grid_with_size_and_raw(5, 20, content.as_bytes());
+    grid.move_viewport_up(6);
+
+    assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+    assert!(!grid.is_scrolled);
+    assert!(grid.lines_below.is_empty());
+    let lines = screen_lines(&grid);
+    assert_eq!(lines.len(), 19);
+    assert_eq!(&lines[16..], ["$ cmd8", "out8", "$"]);
+}
+
+#[test]
+fn delete_last_command_after_a_clear_does_not_bring_scrollback_back() {
+    let content = format!(
+        "old1\r\nold2\r\n\x1b[H\x1b[2J{}{}",
+        marked_command("one", "1"),
+        MARKED_PROMPT
+    );
+    let mut grid = create_grid_with_size_and_raw(5, 20, content.as_bytes());
+
+    assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+    assert_eq!(grid.cursor_coordinates(), Some((2, 0, true)));
+    assert_eq!(grid.viewport.len(), 5);
+    assert_eq!(grid.dump_screen(false).trim_end(), "$");
+}
+
+#[test]
+fn delete_last_command_keeps_the_prompt_column_after_unterminated_output() {
+    let content = format!(
+        "\x1b]133;A\x07$ \x1b]133;B\x07one\x1b]133;C\x07\r\nfoo\x1b]133;D;0\x07{}",
+        MARKED_PROMPT
+    );
+    let mut grid = create_grid_with_size_and_raw(5, 20, content.as_bytes());
+
+    assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+    assert_eq!(screen_lines(&grid), ["   $"]);
+    assert_eq!(grid.cursor_coordinates(), Some((5, 0, true)));
+}
+
+#[test]
+fn delete_last_command_keeps_earlier_unterminated_output() {
+    let content = format!(
+        "\x1b]133;A\x07$ \x1b]133;B\x07one\x1b]133;C\x07\r\nfoo\x1b]133;D;0\x07{}{}",
+        marked_command("two", "2"),
+        MARKED_PROMPT
+    );
+    let mut grid = create_grid_with_size_and_raw(5, 20, content.as_bytes());
+
+    assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+    assert_eq!(screen_lines(&grid), ["$ one", "foo", "$"]);
+    assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+    assert_eq!(screen_lines(&grid), ["$"]);
+}
+
+#[test]
+fn delete_last_command_removes_a_multi_line_command() {
+    let content = format!(
+        "{}\x1b]133;A\x07$ \x1b]133;B\x07for\r\n\x1b]133;A;k=s\x07> \x1b]133;B\x07done\x1b]133;C\x07\r\nout\r\n\x1b]133;D;0\x07{}",
+        marked_command("one", "1"),
+        MARKED_PROMPT
+    );
+    let mut grid = create_grid_with_size_and_raw(10, 20, content.as_bytes());
+
+    assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+    assert_eq!(screen_lines(&grid), ["$ one", "1", "$"]);
+}
+
+#[test]
+fn delete_last_command_leaves_running_and_unmarked_programs_alone() {
+    let finished = marked_command("one", "1");
+    let running = format!("{finished}\x1b]133;A\x07$ \x1b]133;B\x07run\x1b]133;C\x07\r\nbusy");
+    let alternate = format!("{finished}{MARKED_PROMPT}\x1b[?1049hfull");
+    let scroll_region = format!("{finished}{MARKED_PROMPT}\x1b[1;3r");
+    for content in [
+        "plain$ ",
+        finished.as_str(),
+        running.as_str(),
+        alternate.as_str(),
+        scroll_region.as_str(),
+    ] {
+        let mut grid = create_grid_with_size_and_raw(10, 20, content.as_bytes());
+        let before = screen_lines(&grid);
+        assert_eq!(grid.delete_last_command(), CommandDeletion::NotAtPrompt);
+        assert_eq!(screen_lines(&grid), before);
+    }
+}
+
+#[test]
+fn delete_last_command_drops_its_images_and_moves_later_ones() {
+    let (mut grid, _kitty_image_store) = new_kitty_grid(20, 20);
+    let mut vte_parser = vt_parser::Parser::new();
+    let mut interceptor = KittyApcInterceptor::new();
+    let mut feed = |grid: &mut Grid, bytes: &[u8]| {
+        feed_kitty_bytes(grid, &mut vte_parser, &mut interceptor, bytes);
+    };
+    let image = |id: u32| {
+        kitty_apc(
+            &format!("a=T,f=24,s=20,v=20,i={id},C=1"),
+            &rgb_raster(20, 20),
+        )
+    };
+    feed(&mut grid, marked_command("one", "1").as_bytes());
+    feed(
+        &mut grid,
+        b"\x1b]133;A\x07$ \x1b]133;B\x07img\x1b]133;C\x07\r\n",
+    );
+    feed(&mut grid, &image(1));
+    feed(&mut grid, b"\r\n\r\n\x1b]133;D;0\x07");
+    feed(&mut grid, MARKED_PROMPT.as_bytes());
+    feed(&mut grid, &image(2));
+    assert_eq!(grid.kitty_placement_count(), 2);
+
+    assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+    assert_eq!(grid.kitty_placement_count(), 1);
+    assert_eq!(grid.kitty_placements()[0].image_id, 2);
+    assert_eq!(kitty_image_absolute_cell_row(&grid), 2);
+}
+
+#[test]
+fn delete_last_command_reaps_its_sixel_images() {
+    let (mut grid, _kitty_image_store) = new_kitty_grid(40, 80);
+    let mut vte_parser = vt_parser::Parser::new();
+    vte_parser.feed(
+        &mut grid,
+        b"\x1b]133;A\x07$ \x1b]133;B\x07img\x1b]133;C\x07\r\n",
+    );
+    vte_parser.feed(&mut grid, b"\x1bPq#0;2;100;0;0#0!20~-!20~\x1b\\");
+    vte_parser.feed(&mut grid, b"\r\n\x1b]133;D;0\x07");
+    vte_parser.feed(&mut grid, MARKED_PROMPT.as_bytes());
+    assert!(grid.sixel_grid.has_images());
+
+    assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+    assert!(!grid.sixel_grid.has_images());
+    assert!(grid.sixel_grid.drain_image_ids_to_reap().is_some());
 }

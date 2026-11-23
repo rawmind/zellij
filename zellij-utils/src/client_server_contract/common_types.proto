@@ -359,6 +359,7 @@ message Action {
     PasteFromClipboardByPaneIdAction paste_from_clipboard_by_pane_id = 193;
     ToggleStackListOrientationAction toggle_stack_list_orientation = 194;
     ToggleStackListOrientationByPaneIdAction toggle_stack_list_orientation_by_pane_id = 195;
+    DeleteLastCommandAction delete_last_command = 196;
   }
 }
 
@@ -388,6 +389,7 @@ message ScrollToPreviousPromptAction {}
 message ScrollToNextPromptAction {}
 message SelectCommandAtScrollPositionAction {}
 message CopyLastCommandOutputAction {}
+message DeleteLastCommandAction {}
 message PageScrollUpAction {}
 message PageScrollDownAction {}
 message HalfPageScrollUpAction {}

@@ -1278,6 +1278,7 @@ pub enum ActionName {
     PasteFromClipboardByPaneId = 154,
     ToggleStackListOrientation = 155,
     ToggleStackListOrientationByPaneId = 156,
+    DeleteLastCommand = 157,
 }
 impl ActionName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1440,6 +1441,7 @@ impl ActionName {
             ActionName::PasteFromClipboardByPaneId => "PasteFromClipboardByPaneId",
             ActionName::ToggleStackListOrientation => "ToggleStackListOrientation",
             ActionName::ToggleStackListOrientationByPaneId => "ToggleStackListOrientationByPaneId",
+            ActionName::DeleteLastCommand => "DeleteLastCommand",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1599,6 +1601,7 @@ impl ActionName {
             "PasteFromClipboardByPaneId" => Some(Self::PasteFromClipboardByPaneId),
             "ToggleStackListOrientation" => Some(Self::ToggleStackListOrientation),
             "ToggleStackListOrientationByPaneId" => Some(Self::ToggleStackListOrientationByPaneId),
+            "DeleteLastCommand" => Some(Self::DeleteLastCommand),
             _ => None,
         }
     }

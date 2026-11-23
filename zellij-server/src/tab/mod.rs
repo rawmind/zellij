@@ -650,6 +650,9 @@ pub trait Pane {
         None
     }
     fn clear_command_output_flash(&mut self) {}
+    fn delete_last_command(&mut self) -> bool {
+        false
+    }
     fn clear_scroll(&mut self);
     fn is_scrolled(&self) -> bool;
     fn active_at(&self) -> Instant;
@@ -7741,6 +7744,12 @@ impl Tab {
             .send_to_background_jobs(BackgroundJob::ClearCommandOutputFlash { pane_id })
             .with_context(err_context)?;
         Ok(())
+    }
+
+    pub fn delete_last_command(&mut self, client_id: ClientId) -> bool {
+        self.get_active_pane_or_floating_pane_mut(client_id)
+            .map(|active_pane| active_pane.delete_last_command())
+            .unwrap_or(false)
     }
 
     pub fn clear_command_output_flash(&mut self, pane_id: PaneId) {

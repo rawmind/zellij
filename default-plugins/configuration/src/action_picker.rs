@@ -320,6 +320,10 @@ pub const ACTION_SPECS: &[ActionSpec] = &[
         "CopyLastCommandOutput",
         "Copy the output of the last command",
     ),
+    plain(
+        "DeleteLastCommand",
+        "Delete the last command and its output",
+    ),
     plain("EditScrollback", "Open the scrollback in an editor"),
     with_args(
         "SearchInput",

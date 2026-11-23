@@ -366,6 +366,13 @@ pub struct TabOverrideResult {
     pub plugin_ids: HashMap<RunPluginOrAlias, Vec<u32>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct KeyFallback {
+    pub key: KeyWithModifier,
+    pub raw_bytes: Vec<u8>,
+    pub is_kitty_keyboard_protocol: bool,
+}
+
 /// Instructions that can be sent to the [`Screen`].
 #[derive(Debug, Clone)]
 pub enum ScreenInstruction {
@@ -485,6 +492,11 @@ pub enum ScreenInstruction {
     SelectCommandAtScrollPosition(ClientId, Option<NotificationEnd>),
     CopyLastCommandOutput(ClientId, Option<NotificationEnd>),
     ClearCommandOutputFlash(PaneId),
+    DeleteLastCommand {
+        client_id: ClientId,
+        key_fallback: Option<KeyFallback>,
+        completion_tx: Option<NotificationEnd>,
+    },
     PageScrollUp(ClientId, Option<NotificationEnd>),
     PageScrollDown(ClientId, Option<NotificationEnd>),
     HalfPageScrollUp(ClientId, Option<NotificationEnd>),
@@ -1347,6 +1359,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::ClearCommandOutputFlash(..) => {
                 ScreenContext::ClearCommandOutputFlash
             },
+            ScreenInstruction::DeleteLastCommand { .. } => ScreenContext::DeleteLastCommand,
             ScreenInstruction::PageScrollUp(..) => ScreenContext::PageScrollUp,
             ScreenInstruction::PageScrollDown(..) => ScreenContext::PageScrollDown,
             ScreenInstruction::HalfPageScrollUp(..) => ScreenContext::HalfPageScrollUp,
@@ -12270,6 +12283,34 @@ pub(crate) fn screen_thread_main(
                     ?
                 );
                 screen.render(None)?;
+            },
+            ScreenInstruction::DeleteLastCommand {
+                client_id,
+                key_fallback,
+                completion_tx,
+            } => {
+                let mut handled = false;
+                active_tab_and_connected_client_id!(
+                    screen,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| {
+                        handled = tab.delete_last_command(client_id);
+                    }
+                );
+                match key_fallback {
+                    Some(key_fallback) if !handled => {
+                        let senders = &screen.bus.senders;
+                        senders.send_to_screen(ScreenInstruction::ClearScroll(client_id))?;
+                        senders.send_to_screen(ScreenInstruction::WriteCharacter(
+                            Some(key_fallback.key),
+                            key_fallback.raw_bytes,
+                            key_fallback.is_kitty_keyboard_protocol,
+                            client_id,
+                            completion_tx,
+                        ))?;
+                    },
+                    _ => screen.render(None)?,
+                }
             },
             ScreenInstruction::ClearCommandOutputFlash(pane_id) => {
                 let all_tabs = screen.get_tabs_mut();

@@ -170,6 +170,7 @@ pub fn category_of(actions: &[String]) -> &'static str {
             || name == "EditScrollback"
             || name == "SelectCommandAtScrollPosition"
             || name == "CopyLastCommandOutput"
+            || name == "DeleteLastCommand"
             || name.ends_with("Prompt") =>
         {
             "Scroll"
