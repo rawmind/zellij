@@ -4196,24 +4196,8 @@ impl Grid {
         if !at_prompt {
             return CommandDeletion::NotAtPrompt;
         }
-        let Some(output_index) = markers
-            .iter()
-            .rposition(|marker| marker.kind == Osc133MarkerKind::Output)
-        else {
+        let Some((start, end)) = last_completed_command_markers(&markers) else {
             return CommandDeletion::NothingToDelete;
-        };
-        let start_index = markers[..output_index]
-            .iter()
-            .rposition(|marker| !marker.kind.starts_prompt_or_input())
-            .map(|index| index + 1)
-            .unwrap_or(0);
-        let start = markers[start_index];
-        let Some(end) = markers[output_index..]
-            .iter()
-            .find(|marker| marker.kind.starts_prompt_or_input())
-            .copied()
-        else {
-            return CommandDeletion::NotAtPrompt;
         };
         if self.lines_above.len() + self.cursor.y < end.row {
             return CommandDeletion::NotAtPrompt;
@@ -4230,9 +4214,17 @@ impl Grid {
                 row.blank_columns(start.column, end.column);
             }
         } else {
+            let markers_of_previous_command = if start.column == 0 {
+                self.row_at_absolute_index_mut(start.row)
+                    .map(|row| row.osc133_markers.as_slice()[..start.index_in_row].to_vec())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             if let Some(row) = self.row_at_absolute_index_mut(end.row) {
                 row.osc133_markers.remove_range(0..end.index_in_row);
                 row.blank_columns(0, end.column);
+                row.osc133_markers.prepend(markers_of_previous_command);
                 row.is_canonical = true;
             }
             let first_deleted_row = if start.column > 0 {
@@ -6981,6 +6973,13 @@ impl Osc133Markers {
             markers.sort_by_key(f);
         }
     }
+    fn prepend(&mut self, mut markers: Vec<Osc133Marker>) {
+        if markers.is_empty() {
+            return;
+        }
+        markers.extend(self.take_all());
+        self.0 = Some(Box::new(markers));
+    }
     fn remove_range(&mut self, range: std::ops::Range<usize>) {
         if let Some(markers) = self.0.as_mut() {
             markers.drain(range);
@@ -7024,6 +7023,29 @@ struct Osc133MarkerLocation {
     index_in_row: usize,
     column: usize,
     kind: Osc133MarkerKind,
+}
+
+fn last_completed_command_markers(
+    markers: &[Osc133MarkerLocation],
+) -> Option<(Osc133MarkerLocation, Osc133MarkerLocation)> {
+    let is_prompt = |marker: &Osc133MarkerLocation| marker.kind.starts_prompt_or_input();
+    let current_prompt_index = markers
+        .iter()
+        .rposition(|marker| !is_prompt(marker))
+        .map(|index| index + 1)?;
+    let end = *markers.get(current_prompt_index)?;
+    let before_end_markers = markers[..current_prompt_index]
+        .iter()
+        .rposition(|marker| !matches!(marker.kind, Osc133MarkerKind::End(_)))?;
+    let output_index = (markers[before_end_markers].kind == Osc133MarkerKind::Output)
+        .then_some(before_end_markers);
+    let command_index = output_index.unwrap_or(before_end_markers + 1);
+    let start_index = markers[..command_index]
+        .iter()
+        .rposition(|marker| !is_prompt(marker))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    Some((markers[start_index], end))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

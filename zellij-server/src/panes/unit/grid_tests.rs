@@ -11835,3 +11835,70 @@ fn delete_last_command_reaps_its_sixel_images() {
     assert!(!grid.sixel_grid.has_images());
     assert!(grid.sixel_grid.drain_image_ids_to_reap().is_some());
 }
+
+fn zsh_prompt(width: usize) -> String {
+    format!(
+        "\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m{}\r \r\x1b]133;D;0\x07\r\x1b[0m\x1b[27m\x1b[24m\x1b[J\x1b]133;A\x07zsh> \x1b]133;B\x07\x1b[K",
+        " ".repeat(width - 1)
+    )
+}
+
+fn zsh_session(width: usize, commands: &[(&str, &str)]) -> String {
+    let mut content = zsh_prompt(width);
+    for (command, output) in commands {
+        content.push_str(&format!("{command}\r\r\n\x1b]133;C\x07{output}"));
+        content.push_str(&zsh_prompt(width));
+    }
+    content
+}
+
+#[test]
+fn delete_last_command_handles_zsh_commands_without_output() {
+    let content = zsh_session(
+        40,
+        &[
+            ("echo a", "a\r\n"),
+            ("true", ""),
+            ("cd", ""),
+            ("echo b", "b\r\n"),
+            ("false", ""),
+        ],
+    );
+    for rows in [4, 20] {
+        let mut grid = create_grid_with_size_and_raw(rows, 40, content.as_bytes());
+        let mut expected = vec![
+            "zsh> echo a",
+            "a",
+            "zsh> true",
+            "zsh> cd",
+            "zsh> echo b",
+            "b",
+            "zsh> false",
+            "zsh>",
+        ];
+        assert_eq!(screen_lines(&grid), expected);
+        for deleted in [6..7, 4..6, 3..4, 2..3, 0..2] {
+            assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+            expected.drain(deleted);
+            assert_eq!(screen_lines(&grid), expected);
+        }
+        assert_eq!(grid.delete_last_command(), CommandDeletion::NothingToDelete);
+        assert_eq!(screen_lines(&grid), ["zsh>"]);
+    }
+}
+
+#[test]
+fn delete_last_command_handles_commands_without_output_on_a_shared_marker_row() {
+    let mut content = String::from(MARKED_PROMPT);
+    for command in ["one", "two", "three"] {
+        content.push_str(&format!(
+            "{command}\r\n\x1b]133;C\x07\x1b]133;D;0\x07{MARKED_PROMPT}"
+        ));
+    }
+    let mut grid = create_grid_with_size_and_raw(10, 20, content.as_bytes());
+    for expected in [vec!["$ one", "$ two", "$"], vec!["$ one", "$"], vec!["$"]] {
+        assert_eq!(grid.delete_last_command(), CommandDeletion::Deleted);
+        assert_eq!(screen_lines(&grid), expected);
+    }
+    assert_eq!(grid.delete_last_command(), CommandDeletion::NothingToDelete);
+}
